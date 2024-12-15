@@ -1,84 +1,98 @@
 import socket
-import struct
 import threading
 
-# Constants
-PORT_DAEMON = 7777
-PORT_CLIENT = 7778
-HEADER_FORMAT = "!BB32sI"  # Type, Operation, User, Length
-BUFFER_SIZE = 1024
+DAEMON_PORT = 7777  # Port for daemon-to-daemon communication
+CLIENT_PORT = 7778  # Port for client-to-daemon communication
 
-# SIMP Datagram Types and Operations
-TYPE_CONTROL = 0x01
-TYPE_CHAT = 0x02
-OP_ERR = 0x01
-OP_SYN = 0x02
-OP_ACK = 0x04
-OP_FIN = 0x08
+def handle_client(daemon_socket, client_address, peer_daemons):
+    """Handle messages from a connected client."""
+    print(f"New client connected: {client_address}")
 
-class SIMPDaemon:
-    def __init__(self, ip):
-        self.ip = ip
-        self.clients = {}  # {address: username}
-        self.pending_requests = {}  # {client_address: (requesting_address, requesting_username)}
-        self.active_chats = {}  # {client_address: partner_address}
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind((ip, PORT_DAEMON))
-        print(f"Daemon running on {ip}:{PORT_DAEMON}")
+    # Send initial prompt to client
+    daemon_socket.sendto(b"Enter your name: ", client_address)
+    try:
+        # Receive the client's name
+        client_name, _ = daemon_socket.recvfrom(1024)
+        client_name = client_name.decode('utf-8').strip()
 
-    def start(self):
+        daemon_socket.sendto(b"You can now send messages.\n", client_address)
+
         while True:
-            data, addr = self.socket.recvfrom(BUFFER_SIZE)
-            print(f"Received connection from {addr}")
-            self.handle_client(data, addr)
+            # Receive a message from the client
+            message, _ = daemon_socket.recvfrom(1024)
+            message = message.decode('utf-8').strip()
 
-    def handle_client(self, data, addr):
-        header = data[:38]
-        payload = data[38:]
-        msg_type, operation, user, length = struct.unpack(HEADER_FORMAT, header)
-        username = user.decode('ascii').strip('\x00')
+            if not message:
+                continue  # Ignore empty messages
 
-        if msg_type == TYPE_CONTROL:
-            if operation == OP_SYN:
-                self.handle_syn(addr, username, payload.decode('ascii'))
-            elif operation == OP_FIN:
-                self.handle_fin(addr)
-        elif msg_type == TYPE_CHAT:
-            self.route_message(addr, payload.decode('ascii'))
+            full_message = f"From {client_name}: {message}"
+            print(f"Received from {client_name}: {message}")
 
-    def handle_syn(self, addr, username, target_ip):
-        if addr in self.active_chats:
-            self.send_error(addr, "Already in a chat")
-        elif addr in self.pending_requests:
-            self.send_error(addr, "Already has a pending request")
-        else:
-            self.pending_requests[addr] = (target_ip, username)
-            print(f"Chat request from {username} at {addr} for {target_ip}")
-            # Forward the chat request to the target client
-            target_addr = (target_ip, PORT_CLIENT)
-            header = struct.pack(HEADER_FORMAT, TYPE_CONTROL, OP_SYN, username.encode('ascii'), 0)
-            self.socket.sendto(header, target_addr)
+            # Forward the message to all peer daemons
+            for peer_ip in peer_daemons:
+                daemon_socket.sendto(full_message.encode('utf-8'), (peer_ip, DAEMON_PORT))
+    except Exception as e:
+        print(f"Error handling client {client_address}: {e}")
 
-    def handle_fin(self, addr):
-        if addr in self.active_chats:
-            partner = self.active_chats.pop(addr)
-            self.active_chats.pop(partner, None)
-            print(f"Chat ended between {addr} and {partner}")
 
-    def route_message(self, addr, message):
-        if addr in self.active_chats:
-            partner = self.active_chats[addr]
-            self.socket.sendto(message.encode('ascii'), partner)
-        else:
-            self.send_error(addr, "No active chat")
+def handle_daemon(daemon_socket, connected_clients):
+    """Handle messages received from other daemons."""
+    while True:
+        try:
+            # Receive message from another daemon
+            message, addr = daemon_socket.recvfrom(1024)
+            decoded_message = message.decode('utf-8')
 
-    def send_error(self, addr, message):
-        print(f"Sending error to {addr}: {message}")
-        error_msg = struct.pack(HEADER_FORMAT, TYPE_CONTROL, OP_ERR, b'Error', len(message))
-        self.socket.sendto(error_msg + message.encode('ascii'), addr)
+            print(f"Received message from daemon {addr}: {decoded_message}")
 
-# Example usage
+            # Relay the message to all connected clients
+            for client_address in connected_clients:
+                try:
+                    daemon_socket.sendto(f"{decoded_message}\n".encode('utf-8'), client_address)
+                except Exception as e:
+                    print(f"Error sending to client {client_address}: {e}")
+        except Exception as e:
+            print(f"Daemon communication error: {e}")
+            break
+
+
+def start_daemon(my_ip, peer_daemons):
+    """Start the daemon."""
+    daemon_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    # Bind the daemon to the ports for both client and daemon communication
+    daemon_socket.bind((my_ip, CLIENT_PORT))
+
+    print(f"Daemon running on {my_ip}. Waiting for connections...")
+
+    # List to keep track of connected clients
+    connected_clients = []
+
+    # Start a thread to handle daemon-to-daemon communication
+    threading.Thread(target=handle_daemon, args=(daemon_socket, connected_clients), daemon=True).start()
+
+    while True:
+        # Receive data from either a client or another daemon
+        try:
+            message, address = daemon_socket.recvfrom(1024)
+
+            # If the message is from a client (port 7778), start a new thread to handle it
+            if address[1] == CLIENT_PORT:
+                if address not in connected_clients:
+                    connected_clients.append(address)
+                threading.Thread(target=handle_client, args=(daemon_socket, address, peer_daemons)).start()
+
+        except Exception as e:
+            print(f"Error receiving message: {e}")
+
+
 if __name__ == "__main__":
-    daemon = SIMPDaemon("127.0.0.1")
-    daemon_thread = threading.Thread(target=daemon.start)
-    daemon_thread.start()
+    import sys
+    if len(sys.argv) < 3:
+        print("Usage: python daemon.py <my_ip> <peer_daemon_ip_1> [<peer_daemon_ip_2> ...]")
+        sys.exit(1)
+
+    my_ip = sys.argv[1]
+    peer_daemons = sys.argv[2:]  # List of peer daemon IPs
+
+    start_daemon(my_ip, peer_daemons)
