@@ -1,40 +1,55 @@
 import socket
+import threading
+import struct
 
-def main():
-    daemon_ip = input("Enter the daemon IP to connect to: ").strip()
-    daemon_port = 7778  # Client-to-daemon UDP port
+class UdpClient:
+    def __init__(self, daemon_host):
+        self.daemon_address = (daemon_host, 7778)  # Connect to daemon's client port
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.username = None
 
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    def create_datagram(self, datagram_type, operation, sequence, user, payload=""):
+        """Create a SIMP datagram."""
+        user_padded = user.encode('ascii').ljust(32, b'\x00')[:32]  # Ensure 32 bytes for the user field
+        length = len(payload)
+        header = struct.pack('!BB1B32sI', datagram_type, operation, sequence, user_padded, length)
+        return header + payload.encode('ascii')
 
-    try:
-        print("Connecting to daemon...")
+    def parse_datagram(self, datagram):
+        """Parse a SIMP datagram into its components."""
+        header = datagram[:39]
+        payload = datagram[39:].decode('ascii')
+        datagram_type, operation, sequence, user_padded, length = struct.unpack('!BB1B32sI', header)
+        user = user_padded.decode('ascii').rstrip('\x00')  # Remove padding
+        return datagram_type, operation, sequence, user, length, payload
 
-        # Send an initial handshake to the daemon
-        client_socket.sendto(b"HELLO", (daemon_ip, daemon_port))
+    def send_message(self, message):
+        """Send a message to the daemon in SIMP format."""
+        datagram = self.create_datagram(0x02, 0x01, 0, self.username, message)  # 0x02 - Chat message
+        self.sock.sendto(datagram, self.daemon_address)
 
-        # Wait for the daemon's initial message
-        response, _ = client_socket.recvfrom(1024)
-        print(response.decode('utf-8'), end='')
+    def receive_messages(self):
+        """Listen for incoming messages from the daemon."""
+        while True:
+            data, _ = self.sock.recvfrom(1024)
+            datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
+            if datagram_type == 0x02:  # Chat message
+                print(f"{user}: {payload}")  # Print the message received from the daemon
 
-        # Enter and send the name
-        name = input()
-        client_socket.sendto(name.encode(), (daemon_ip, daemon_port))
+    def start(self):
+        """Start the client."""
+        self.username = input("Enter your username: ")
+        datagram = self.create_datagram(0x01, 0x01, 0, self.username, "has joined the chat!")  # 0x01 - Connection message
+        self.sock.sendto(datagram, self.daemon_address)  # Send the username to the daemon
+
+        print("\nYou can now send messages. Type your message and press Enter.")
+        threading.Thread(target=self.receive_messages, daemon=True).start()
 
         while True:
-            # Enter and send a message
-            message = input("Enter your message: ")
-            client_socket.sendto(message.encode(), (daemon_ip, daemon_port))
-            print("Message sent to daemon. Waiting for replies...\n")
-
-            # Receive and display the reply
-            reply, _ = client_socket.recvfrom(1024)
-            print(reply.decode('utf-8'))
-
-    except Exception as e:
-        print(f"Error: {e}")
-    finally:
-        client_socket.close()
-
+            message = input()
+            self.send_message(message)
 
 if __name__ == "__main__":
-    main()
+    daemon_host = input("Enter the IP address of the daemon to connect to: ")
+    client = UdpClient(daemon_host)
+    client.start()

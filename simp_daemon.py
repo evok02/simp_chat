@@ -1,98 +1,126 @@
 import socket
 import threading
+import struct
 
-DAEMON_PORT = 7777  # Port for daemon-to-daemon communication
-CLIENT_PORT = 7778  # Port for client-to-daemon communication
+class UdpDaemon:
+    def __init__(self, host):
+        self.daemon_address = (host, 7777)  # Daemon-to-daemon communication on port 7777
+        self.client_address = None  # To store the connected client address (port 7778)
+        self.daemons = {}  # Known daemons (address: (host, port))
+        self.client_username = None  # Username of the connected client
 
-def handle_client(daemon_socket, client_address, peer_daemons):
-    """Handle messages from a connected client."""
-    print(f"New client connected: {client_address}")
+        # Daemon socket for communication with other daemons
+        self.daemon_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.daemon_sock.bind(self.daemon_address)
+        
+        # Client socket for communication with client
+        self.client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.client_sock.bind((host, 7778))
 
-    # Send initial prompt to client
-    daemon_socket.sendto(b"Enter your name: ", client_address)
-    try:
-        # Receive the client's name
-        client_name, _ = daemon_socket.recvfrom(1024)
-        client_name = client_name.decode('utf-8').strip()
+        # Predefined daemon addresses
+        self.default_daemons = []
 
-        daemon_socket.sendto(b"You can now send messages.\n", client_address)
+    def create_datagram(self, datagram_type, operation, sequence, user, payload=""):
+        """Create a SIMP datagram."""
+        user_padded = user.encode('ascii').ljust(32, b'\x00')[:32]  # Ensure 32 bytes for the user field
+        length = len(payload)
+        header = struct.pack('!BB1B32sI', datagram_type, operation, sequence, user_padded, length)
+        return header + payload.encode('ascii')
+
+    def parse_datagram(self, datagram):
+        """Parse a SIMP datagram into its components."""
+        header = datagram[:39]
+        payload = datagram[39:].decode('ascii')
+        datagram_type, operation, sequence, user_padded, length = struct.unpack('!BB1B32sI', header)
+        user = user_padded.decode('ascii').rstrip('\x00')  # Remove padding
+        return datagram_type, operation, sequence, user, length, payload
+
+    def send_message_to_daemons(self, username, message):
+        """Send a message with username to all known daemons."""
+        formatted_message = f"{username}: {message}"
+        datagram = self.create_datagram(0x02, 0x01, 0, username, formatted_message)
+        for address in self.daemons.values():
+            self.daemon_sock.sendto(datagram, address)
+
+    def forward_to_client(self, message):
+        """Forward a message to the connected client."""
+        if self.client_address:
+            datagram = self.create_datagram(0x02, 0x01, 0, self.client_username, message)
+            self.client_sock.sendto(datagram, self.client_address)
+
+    def handle_daemon_messages(self):
+        """Handle messages from other daemons."""
+        while True:
+            data, address = self.daemon_sock.recvfrom(1024)
+            datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
+
+            # Add sender to known daemons if new
+            if address not in self.daemons.values() and address != self.daemon_address:
+                self.daemons[address] = address
+                print(f"Added new daemon: {address}")
+
+            # Forward the message to the client
+            if datagram_type == 0x02:  # Chat message
+                self.forward_to_client(payload)
+
+    def handle_client_messages(self):
+        """Handle messages from the connected client."""
+        while True:
+            data, address = self.client_sock.recvfrom(1024)
+            datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
+
+            # If the client is not yet registered, register it
+            if self.client_address is None:
+                self.client_address = address
+                print(f"Client connected from {self.client_address}")
+
+            # If username is not yet set, interpret the first message as the username
+            if self.client_username is None:
+                self.client_username = user
+                print(f"Client username set to {self.client_username}")
+
+                # Broadcast that this user has joined
+                self.send_message_to_daemons(self.client_username, "has joined the chat!")
+                self.forward_to_client(f"Welcome, {self.client_username}!")
+                continue
+
+            # Broadcast the client's message to all other daemons
+            print(f"From client: {payload}")
+            self.send_message_to_daemons(self.client_username, payload)
+
+    def discover_daemons(self):
+        """Send a discovery message to all default daemons."""
+        discovery_message = "DISCOVER"
+        for daemon in self.default_daemons:
+            if daemon != self.daemon_address:  # Exclude self from discovery
+                datagram = self.create_datagram(0x01, 0x01, 0, "DISCOVER", discovery_message)
+                self.daemon_sock.sendto(datagram, daemon)
+
+    def start(self):
+        """Start the daemon to handle client and daemon messages."""
+        print(f"Daemon started. Listening on {self.daemon_address} for daemons.")
+        print("Listening on port 7778 for client connections.")
+
+        # Send discovery messages
+        self.discover_daemons()
+
+        # Start separate threads for daemon and client communication
+        threading.Thread(target=self.handle_daemon_messages, daemon=True).start()
+        threading.Thread(target=self.handle_client_messages, daemon=True).start()
 
         while True:
-            # Receive a message from the client
-            message, _ = daemon_socket.recvfrom(1024)
-            message = message.decode('utf-8').strip()
-
-            if not message:
-                continue  # Ignore empty messages
-
-            full_message = f"From {client_name}: {message}"
-            print(f"Received from {client_name}: {message}")
-
-            # Forward the message to all peer daemons
-            for peer_ip in peer_daemons:
-                daemon_socket.sendto(full_message.encode('utf-8'), (peer_ip, DAEMON_PORT))
-    except Exception as e:
-        print(f"Error handling client {client_address}: {e}")
-
-
-def handle_daemon(daemon_socket, connected_clients):
-    """Handle messages received from other daemons."""
-    while True:
-        try:
-            # Receive message from another daemon
-            message, addr = daemon_socket.recvfrom(1024)
-            decoded_message = message.decode('utf-8')
-
-            print(f"Received message from daemon {addr}: {decoded_message}")
-
-            # Relay the message to all connected clients
-            for client_address in connected_clients:
-                try:
-                    daemon_socket.sendto(f"{decoded_message}\n".encode('utf-8'), client_address)
-                except Exception as e:
-                    print(f"Error sending to client {client_address}: {e}")
-        except Exception as e:
-            print(f"Daemon communication error: {e}")
-            break
-
-
-def start_daemon(my_ip, peer_daemons):
-    """Start the daemon."""
-    daemon_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-    # Bind the daemon to the ports for both client and daemon communication
-    daemon_socket.bind((my_ip, CLIENT_PORT))
-
-    print(f"Daemon running on {my_ip}. Waiting for connections...")
-
-    # List to keep track of connected clients
-    connected_clients = []
-
-    # Start a thread to handle daemon-to-daemon communication
-    threading.Thread(target=handle_daemon, args=(daemon_socket, connected_clients), daemon=True).start()
-
-    while True:
-        # Receive data from either a client or another daemon
-        try:
-            message, address = daemon_socket.recvfrom(1024)
-
-            # If the message is from a client (port 7778), start a new thread to handle it
-            if address[1] == CLIENT_PORT:
-                if address not in connected_clients:
-                    connected_clients.append(address)
-                threading.Thread(target=handle_client, args=(daemon_socket, address, peer_daemons)).start()
-
-        except Exception as e:
-            print(f"Error receiving message: {e}")
-
+            pass
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 3:
-        print("Usage: python daemon.py <my_ip> <peer_daemon_ip_1> [<peer_daemon_ip_2> ...]")
-        sys.exit(1)
+    host = input("Enter daemon host (IP address this daemon will run on, e.g., 127.0.0.1): ")
+    daemon = UdpDaemon(host)
 
-    my_ip = sys.argv[1]
-    peer_daemons = sys.argv[2:]  # List of peer daemon IPs
+    print("\n=== Configure Other Known Daemons ===")
+    while True:
+        other_host = input("Enter another daemon IP (or press Enter to finish): ")
+        if not other_host:
+            break
+        daemon.default_daemons.append((other_host, 7777))
 
-    start_daemon(my_ip, peer_daemons)
+    print(f"\nKnown daemons: {daemon.default_daemons}\n")
+    daemon.start()
