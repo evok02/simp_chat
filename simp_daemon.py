@@ -1,6 +1,7 @@
 import socket
 import threading
 import struct
+import sys
 
 class UdpDaemon:
     def __init__(self, host):
@@ -35,12 +36,38 @@ class UdpDaemon:
         user = user_padded.decode('ascii').rstrip('\x00')  # Remove padding
         return datagram_type, operation, sequence, user, length, payload
 
-    def send_message_to_daemons(self, username, message):
+    def send_message_to_daemons(self, datagram_type, operation, username, message):
         """Send a message with username to all known daemons."""
+        print('got to send message to deamon')
+        if datagram_type == 0x01:
+            if operation == 0x02:
+                print('got to all if statements')
+                formatted_message = f'Conversation request is pending...\nDo you want to accept chat with {username}'
+                datagram = self.create_datagram(0x01, 0x02, 0, username, formatted_message)
+                # for address in self.daemons.values():
+                #     print('for loop')
+                #     self.daemon_sock.sendto(datagram, address)
+                print(f'ip is {message}')
+                self.daemon_sock.sendto(datagram, (message, 7777))
         formatted_message = f"{username}: {message}"
         datagram = self.create_datagram(0x02, 0x01, 0, username, formatted_message)
         for address in self.daemons.values():
             self.daemon_sock.sendto(datagram, address)
+
+    # def forward_to_client(self, datagram_type, operation, username, *args):
+    #     """Forward a message to the connected client."""
+    #     print('forward received')
+    #     if self.client_address:
+    #         if datagram_type == 0x01:
+    #             print('datagram type01')
+    #             if operation == 0x02:
+    #                 datagram = self.create_datagram(0x01, 0x02,self.client_username ,f'{username} wants to connect.Do you accept or decline?')
+    #                 self.client_sock.sendto(datagram, self.client_address)
+    #         if datagram_type == 0x02:
+    #             print('type 02')
+    #             datagram = self.create_datagram(0x02, 0x01, 0, self.client_username, args[1])
+    #             self.client_sock.sendto(datagram, self.client_address)
+
 
     def forward_to_client(self, message):
         """Forward a message to the connected client."""
@@ -58,10 +85,13 @@ class UdpDaemon:
             if address not in self.daemons.values() and address != self.daemon_address:
                 self.daemons[address] = address
                 print(f"Added new daemon: {address}")
+            if datagram_type == 0x01:
+                self.forward_to_client(payload)
 
             # Forward the message to the client
             if datagram_type == 0x02:  # Chat message
                 self.forward_to_client(payload)
+
 
     def handle_client_messages(self):
         """Handle messages from the connected client."""
@@ -80,13 +110,20 @@ class UdpDaemon:
                 print(f"Client username set to {self.client_username}")
 
                 # Broadcast that this user has joined
-                self.send_message_to_daemons(self.client_username, "has joined the chat!")
-                self.forward_to_client(f"Welcome, {self.client_username}!")
+                self.send_message_to_daemons(datagram_type, operation, self.client_username, "has joined the chat!")
+                # self.forward_to_client(f"Welcome, {self.client_username}!")
                 continue
+
+            if datagram_type == 0x01:
+                print('datagram correct')
+                if operation == 0x02:
+                    print('operation correct')
+                    daemon.default_daemons.append((payload, 7777))
+                    self.send_message_to_daemons(datagram_type, operation, user, payload)
 
             # Broadcast the client's message to all other daemons
             print(f"From client: {payload}")
-            self.send_message_to_daemons(self.client_username, payload)
+            self.send_message_to_daemons(datagram_type, operation, self.client_username, payload)
 
     def discover_daemons(self):
         """Send a discovery message to all default daemons."""
@@ -112,15 +149,18 @@ class UdpDaemon:
             pass
 
 if __name__ == "__main__":
-    host = input("Enter daemon host (IP address this daemon will run on, e.g., 127.0.0.1): ")
+    host = sys.argv[1]
+    # host = input("Enter daemon host (IP address this daemon will run on, e.g., 127.0.0.1): ")
     daemon = UdpDaemon(host)
 
-    print("\n=== Configure Other Known Daemons ===")
-    while True:
-        other_host = input("Enter another daemon IP (or press Enter to finish): ")
-        if not other_host:
-            break
-        daemon.default_daemons.append((other_host, 7777))
+    # print("\n=== Configure Other Known Daemons ===")
+    # while True:
+    #     other_host = input("Enter another daemon IP (or press Enter to finish): ")
+    #     if not other_host:
+    #         break
+    #     daemon.default_daemons.append((other_host, 7777))
 
-    print(f"\nKnown daemons: {daemon.default_daemons}\n")
+    # print(f"\nKnown daemons: {daemon.default_daemons}\n")
     daemon.start()
+
+#192.168.1.20
