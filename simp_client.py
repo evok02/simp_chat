@@ -5,6 +5,7 @@ import sys
 
 
 is_chatting = False
+last_seq = 0x00
 class UdpClient:
     
     def __init__(self, daemon_host):
@@ -33,12 +34,14 @@ class UdpClient:
 
     def send_message(self, message):
         """Send a message to the daemon in SIMP format."""
-        datagram = self.create_datagram(0x02, 0x01, 0, self.username, message)  # 0x02 - Chat message
-        if is_chatting == False:
-            if message.upper() == "YES":
-                is_chatting == True
-                datagram = self.create_datagram(0x01, (0x02|0x04), 0, self.username, "connection accepted")
-        self.sock.sendto(datagram, self.daemon_address)
+        datagram = self.create_datagram(0x02, 0x01, 0x00, self.username, message)  # 0x02 - Chat message
+        if is_chatting == False and message.upper() == "YES":
+            datagram = self.create_datagram(0x01, 0x04, 0, self.username, "")
+            self.sock.sendto(datagram, self.daemon_address)
+            datagram = self.create_datagram(0x01, 0x02, 0, self.username, "connection accepted")
+            self.sock.sendto(datagram, self.daemon_address)
+            is_chatting == True
+        
     def receive_messages(self):
         """Listen for incoming messages from the daemon."""
         while True:
