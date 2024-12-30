@@ -3,7 +3,7 @@ import threading
 import struct
 import sys
 
-SYN_ACK = 0x02 | 0x04
+
 
 class UdpDaemon:
     def __init__(self, host):
@@ -11,6 +11,11 @@ class UdpDaemon:
         self.client_address = None  # To store the connected client address (port 7778)
         self.daemons = {}  # Known daemons (address: (host, port))
         self.client_username = None  # Username of the connected client
+        self.last_ack_recv = 0x00
+        self.last_ack_sent = 0x00
+        self.last_syn_sent = 0x00
+        self.last_syn_recv = 0x00
+        self.client_is_chatting = False
 
         # Daemon socket for communication with other daemons
         self.daemon_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -40,50 +45,66 @@ class UdpDaemon:
 
     def send_message_to_daemons(self, datagram_type, operation, username, message):
         """Send a message with username to all known daemons."""
-        print('got to send message to daemon')
-        if datagram_type == 0x01:
-            if operation == (0x02 | 0x04):
-                formatted_message = ""
-                datagram = self.create_datagram(0x01, (0x02 | 0x04), 0, username, formatted_message)
-                for address in self.daemons.values():
-                    self.daemon_sock.sendto(datagram, address)
-            elif operation == 0x02:
-                print('got to all if statements')
+        if datagram_type == 0x01 and operation == 0x02:
+            
+            if len(self.daemons.values()) == 0:
                 formatted_message = f'Conversation request is pending...\nDo you want to accept chat with {username}'
-                datagram = self.create_datagram(0x01, 0x02, 0, username, formatted_message)
-                print(f'ip is {message}')
+                if self.last_ack_recv == 0x00:
+                    datagram = self.create_datagram(0x01, 0x02, 0x01, username, formatted_message)
+                else:
+                    datagram = self.create_datagram(0x01, 0x02, 0x00, username, formatted_message)
                 self.daemon_sock.sendto(datagram, (message, 7777))
-            elif operation == 0x04:
-                formatted_message = ""
-                datagram = self.create_datagram(0x01, 0x04, 0, username, formatted_message)
+            else:
+                if self.last_ack_recv == 0x00:
+                    datagram = self.create_datagram(0x01, 0x02, 0x01, username, message)
+                else:
+                    datagram = self.create_datagram(0x01, 0x02, 0x00, username, message)
                 for address in self.daemons.values():
                     self.daemon_sock.sendto(datagram, address)
+
+        if datagram_type == 0x01 and operation == 0x04:
+            formatted_message = ""
+            datagram = self.create_datagram(0x01, 0x04, self.last_syn_recv, username, formatted_message)
+            for address in self.daemons.values():
+                self.daemon_sock.sendto(datagram, address)
+            self.last_ack_sent = self.last_syn_recv
         else:
             formatted_message = f"{username}: {message}"
             datagram = self.create_datagram(0x02, 0x01, 0, username, formatted_message)
             for address in self.daemons.values():
                 self.daemon_sock.sendto(datagram, address)
 
+    def send_ack(self):
+        """ Send ACK """
+        try:
+            datagram = self.create_datagram(0x01, 0x04, self.last_syn_recv, "Server", "")
+            for address in self.daemons.values():
+                self.daemon_sock.sendto(datagram, address)
+            self.last_ack_sent = self.last_syn_recv
+        except:
+            print("Can't send the ACK")
 
-    # def forward_to_client(self, datagram_type, operation, username, *args):
-    #     """Forward a message to the connected client."""
-    #     print('forward received')
-    #     if self.client_address:
-    #         if datagram_type == 0x01:
-    #             print('datagram type01')
-    #             if operation == 0x02:
-    #                 datagram = self.create_datagram(0x01, 0x02,self.client_username ,f'{username} wants to connect.Do you accept or decline?')
-    #                 self.client_sock.sendto(datagram, self.client_address)
-    #         if datagram_type == 0x02:
-    #             print('type 02')
-    #             datagram = self.create_datagram(0x02, 0x01, 0, self.client_username, args[1])
-    #             self.client_sock.sendto(datagram, self.client_address)
+    def send_syn(self):
+        """ Send SYN """
+        try:
+            if self.last_ack_recv == 0x00:
+                sequence = 0x01
+            else:
+                sequence = 0x00
+            datagram = self.create_datagram(0x01, 0x02, sequence, "Server", "")
+            for address in self.daemons.values():
+                self.daemon_sock.sendto(datagram, address)
+            self.last_syn_sent = sequence
+        except:
+            print(f"Can't send the SYN {sequence}")
+
+
 
 
     def forward_to_client(self, message):
         """Forward a message to the connected client."""
         if self.client_address:
-            datagram = self.create_datagram(0x02, 0x01, 0, self.client_username, message)
+            datagram = self.create_datagram(0x02, 0x01, 0x00, self.client_username, message)
             self.client_sock.sendto(datagram, self.client_address)
 
     def handle_daemon_messages(self):
@@ -96,14 +117,19 @@ class UdpDaemon:
             if address not in self.daemons.values() and address != self.daemon_address:
                 self.daemons[address] = address
                 print(f"Added new daemon: {address}")
-            if datagram_type == 0x01:
-                self.forward_to_client(payload)
 
-                if operation == (0x02|0x04):
-                    print("2nd daemon received syn+ack from client")
-                    self.send_message_to_daemons(datagram_type, 0x04, user, payload)
+            if datagram_type == 0x01:
+                if operation == 0x02:
+                    print(f"Daemon received a SYN {sequence}")
+                    self.last_syn_recv = sequence
+                    self.forward_to_client(payload)
+                if self.client_is_chatting:
+                    self.send_ack()
                 elif operation == 0x04:
-                    print("daemon recieved an ack")
+                    print(f"Daemon received an ACK {sequence}")
+                    self.last_ack_recv = sequence
+                    if not self.client_is_chatting:
+                        self.client_is_chatting = True
 
             # Forward the message to the client
             elif datagram_type == 0x02:  # Chat message
@@ -127,18 +153,18 @@ class UdpDaemon:
 
                 # Broadcast that this user has joined
                 self.send_message_to_daemons(datagram_type, operation, self.client_username, "has joined the chat!")
-                # self.forward_to_client(f"Welcome, {self.client_username}!")
                 continue
 
             if datagram_type == 0x01:
-                print('datagram correct')
-                if operation == (0x02 | 0x04):  # SYN+ACK
-                    print("daemon received syn+ack from client")
-                    self.send_message_to_daemons(datagram_type, operation, user, payload)
-                elif operation == 0x02:  # SYN
-                    print('operation correct')
-                    self.default_daemons.append((payload, 7777))
-                    self.send_message_to_daemons(datagram_type, operation, user, payload)
+                if operation == 0x02:
+                    if not self.client_is_chatting:  # SYN
+                        self.default_daemons.append((payload, 7777))
+                        self.send_message_to_daemons(datagram_type, operation, user, payload)
+                    else:
+                        self.send_message_to_daemons(datagram_type, operation, user, payload)
+                elif operation == 0x04:
+                    self.send_ack()
+
             elif datagram_type == 0x02:
                 # Broadcast the client's message to all other daemons
                 print(f"From client: {payload}")
