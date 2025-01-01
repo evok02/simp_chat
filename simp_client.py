@@ -12,6 +12,10 @@ class UdpClient:
         self.daemon_address = (daemon_host, 7778)  # Connect to daemon's client port
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.username = None
+        self.recieve_thread = None
+        self.input_thread = None
+        self.running = True
+        self.wait_for_reply = threading.Event()
 
     def create_datagram(self, datagram_type, operation, sequence, user, payload=""):
         """Create a SIMP datagram."""
@@ -34,24 +38,52 @@ class UdpClient:
 
     def send_message(self, message):
         """Send a message to the daemon in SIMP format."""
-        datagram = self.create_datagram(0x02, 0x01, 0x00, self.username, message)  # 0x02 - Chat message
-        if is_chatting == False and message.upper() == "YES":
-            datagram = self.create_datagram(0x01, 0x04, 0, self.username, "")
+        if message.lower() == "q":
+            datagram = self.create_datagram(0x01, 0x08, 0, self.username, "disconnect")
             self.sock.sendto(datagram, self.daemon_address)
-            datagram = self.create_datagram(0x01, 0x02, 0, self.username, "connection accepted")
-            self.sock.sendto(datagram, self.daemon_address)
-            is_chatting == True
+            print("Disconnected from the daemon.")
+            self.sock.close()
+            if self.recieve_thread:
+                self.recieve_thread.join()
+            sys.exit(0)
+        else:
+            if is_chatting == False and message.upper() == "YES":
+                datagram = self.create_datagram(0x01, 0x04, 0, self.username, "")
+                self.sock.sendto(datagram, self.daemon_address)
+                datagram = self.create_datagram(0x01, 0x02, 0, self.username, "connection accepted")
+                self.sock.sendto(datagram, self.daemon_address)
+                is_chatting == True
+            else:
+                datagram = self.create_datagram(0x02, 0x01, 0x00, self.username, message)  # 0x02 - Chat message
+                self.sock.sendto(datagram, self.daemon_address)
+                self.wait_for_reply.clear()  # Block until a reply is received
+                self.wait_for_reply.wait()
+
         
     def receive_messages(self):
         """Listen for incoming messages from the daemon."""
-        while True:
-            data, _ = self.sock.recvfrom(1024)
-            datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
-            if datagram_type == 0x01:
-                if operation == 0x02:
-                    print(f'{payload}')
-            if datagram_type == 0x02:  # Chat message
-                print(f"{payload}")  # Print the message received from the daemon
+        while self.running:
+            try:
+                data, _ = self.sock.recvfrom(1024)
+                datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
+                if datagram_type == 0x01:
+                    if operation == 0x02:
+                        print(f'{payload}')
+                if datagram_type == 0x02:  # Chat message
+                    print(f"{payload}") 
+                    self.wait_for_reply.set()  # Print the message received from the daemon
+            except OSError:
+                print("Stopped from receiving messages")
+                break
+
+    def input_thread_func(self):
+        """Thread for handling user input."""
+        while self.running:
+            try:
+                message = input()
+                self.send_message(message)
+            except EOFError:
+                break
 
     def start(self):
         """Start the client."""
@@ -59,18 +91,21 @@ class UdpClient:
         datagram = self.create_datagram(0x02, 0x01, 0, self.username, "has joined the chat!")  # 0x01 - Connection message
         self.sock.sendto(datagram, self.daemon_address)  # Send the username to the daemon
 
+        connect_to = input('\nDo you want to start a new chat? If so enter IP of the user to connect: \n')
+        if connect_to:
+            self.request_chat(connect_to)
         
-        # print("\nYou can now send messages. Type your message and press Enter.")
-        threading.Thread(target=self.receive_messages, daemon=True).start()
-        connect_to = input('\nDo you want to start a new chat? If so enter IP of the user to connect ')
-        if not connect_to:
-            while True:
-                message = input()
-                self.send_message(message)
-        self.request_chat(connect_to)
-        while True:
-                message = input()
-                self.send_message(message)
+        self.receive_thread = threading.Thread(target=self.receive_messages)
+        self.receive_thread.start()
+        self.input_thread = threading.Thread(target=self.input_thread_func)
+        self.input_thread.start()
+
+        
+        
+
+        self.receive_thread.join()
+        self.input_thread.join()
+        
 
 if __name__ == "__main__":
     daemon_host = sys.argv[1]
