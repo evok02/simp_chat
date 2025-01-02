@@ -2,16 +2,20 @@ import socket
 import threading
 import struct
 import sys
+import time
 
-SYN_ACK = 0x02 | 0x04
 
 class UdpDaemon:
     def __init__(self, host):
         self.daemon_address = (host, 7777)  # Daemon-to-daemon communication on port 7777
         self.client_address = None  # To store the connected client address (port 7778)
         self.daemons = {}  # Known daemons (address: (host, port))
-        self.client_username = None # Username of the connected client
-        self.SYNs = {}
+        self.client_username = None  # Username of the connected client
+        self.last_ack_recv = 0x00
+        self.last_ack_sent = 0x00
+        self.last_syn_sent = 0x00
+        self.last_syn_recv = 0x00
+        self.client_is_chatting = False
 
         # Daemon socket for communication with other daemons
         self.daemon_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -39,139 +43,207 @@ class UdpDaemon:
         user = user_padded.decode('ascii').rstrip('\x00')  # Remove padding
         return datagram_type, operation, sequence, user, length, payload
 
-    def send_message_to_daemons(self, datagram_type, operation, sequence, username, message):
+    def send_message_to_daemons(self, datagram_type, operation, username, message):
         """Send a message with username to all known daemons."""
-        print('got to send message to daemon')
-        if datagram_type == 0x01:
-            if operation == (0x02 | 0x04):
-                formatted_message = ""
-                datagram = self.create_datagram(0x01, (0x02 | 0x04), sequence, username, formatted_message)
-                for address in self.daemons.values():
-                    self.daemon_sock.sendto(datagram, address)
-            elif operation == 0x02:
-                print('got to all if statements')
-                formatted_message = f'Conversation request is pending...\nDo you want to accept chat with {username}. Yes/No?'
-                datagram = self.create_datagram(0x01, 0x02, sequence, username, formatted_message)
-                print(f'ip is {message}')
+        if datagram_type == 0x01 and operation == 0x02:
+            
+            if len(self.daemons.values()) == 0:
+                formatted_message = f'Conversation request is pending...\nDo you want to accept chat with {username}'
+                if self.last_ack_recv == 0x00:
+                    datagram = self.create_datagram(0x01, 0x02, 0x01, username, formatted_message)
+                else:
+                    datagram = self.create_datagram(0x01, 0x02, 0x00, username, formatted_message)
                 self.daemon_sock.sendto(datagram, (message, 7777))
-            elif operation == 0x04:
-                formatted_message = ""
-                datagram = self.create_datagram(0x01, 0x04, sequence, username, formatted_message)
+            else:
+                if self.last_ack_recv == 0x00:
+                    datagram = self.create_datagram(0x01, 0x02, 0x01, username, message)
+                else:
+                    datagram = self.create_datagram(0x01, 0x02, 0x00, username, message)
                 for address in self.daemons.values():
                     self.daemon_sock.sendto(datagram, address)
-            elif operation == 0x08:
-                formatted_message = f'Request is declined. Connection is closed'
-                datagram = self.create_datagram(0x01, 0x08, sequence, ack, username, formatted_message)
+
+        if datagram_type == 0x01 and operation == 0x04:
+            formatted_message = ""
+            datagram = self.create_datagram(0x01, 0x04, self.last_syn_recv, username, formatted_message)
+            for address in self.daemons.values():
+                self.daemon_sock.sendto(datagram, address)
+            self.last_ack_sent = self.last_syn_recv
+        if datagram_type == 0x01 and operation == 0x08:
+            if self.client_is_chatting:
+                print('if seld client is chatting')
+                formatted_message = f'{username} quit the chat'
+                datagram = self.create_datagram(0x01, 0x08, 0, username, formatted_message)
                 for address in self.daemons.values():
                     self.daemon_sock.sendto(datagram, address)
-                self.daemons.clear()
+                    print(f'sent to {address}')
+            else:
+                formatted_message = f"{username} declined the connection"
+                datagram = self.create_datagram(0x01, 0x08, 0, username, formatted_message)
+                for address in self.daemons.values():
+                    self.daemon_sock.sendto(datagram, address)
         else:
             formatted_message = f"{username}: {message}"
-            datagram = self.create_datagram(0x02, 0x01, sequence, ack, username, formatted_message)
+            datagram = self.create_datagram(0x02, 0x01, 0, username, formatted_message)
             for address in self.daemons.values():
                 self.daemon_sock.sendto(datagram, address)
 
+    def send_ack(self):
+        """ Send ACK """
+        try:
+            datagram = self.create_datagram(0x01, 0x04, self.last_syn_recv, "Server", "")
+            for address in self.daemons.values():
+                self.daemon_sock.sendto(datagram, address)
+            self.last_ack_sent = self.last_syn_recv
+        except:
+            print("Can't send the ACK")
 
-    # def forward_to_client(self, datagram_type, operation, username, *args):
-    #     """Forward a message to the connected client."""
-    #     print('forward received')
-    #     if self.client_address:
-    #         if datagram_type == 0x01:
-    #             print('datagram type01')
-    #             if operation == 0x02:
-    #                 datagram = self.create_datagram(0x01, 0x02,self.client_username ,f'{username} wants to connect.Do you accept or decline?')
-    #                 self.client_sock.sendto(datagram, self.client_address)
-    #         if datagram_type == 0x02:
-    #             print('type 02')
-    #             datagram = self.create_datagram(0x02, 0x01, 0, self.client_username, args[1])
-    #             self.client_sock.sendto(datagram, self.client_address)
+    def send_syn(self):
+        """ Send SYN """
+        try:
+            if self.last_ack_recv == 0x00:
+                sequence = 0x01
+            else:
+                sequence = 0x00
+            datagram = self.create_datagram(0x01, 0x02, sequence, "Server", "")
+            for address in self.daemons.values():
+                self.daemon_sock.sendto(datagram, address)
+            self.last_syn_sent = sequence
+        except:
+            print(f"Can't send the SYN {sequence}")
 
-    def forward_to_client(self, message, sequence, user):
+
+
+
+    def forward_to_client(self, message):
         """Forward a message to the connected client."""
         if self.client_address:
-            datagram = self.create_datagram(0x02, 0x01, sequence, user, message)
-            self.client_sock.sendto(datagram, self.client_address)
+            if message == 'User left chat':
+                datagram = self.create_datagram(0x01, 0x08, 0x00, self.client_username, message)
+                self.client_sock.sendto(datagram, self.client_address)
+            else:
+                datagram = self.create_datagram(0x02, 0x01, 0x00, self.client_username, message)
+                self.client_sock.sendto(datagram, self.client_address)
 
     def handle_daemon_messages(self):
         """Handle messages from other daemons."""
         while True:
-            data, address = self.daemon_sock.recvfrom(1024)
-            datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
+            try:
+                data, address = self.daemon_sock.recvfrom(1024)
+                datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
+                # Add sender to known daemons if new
+                if address not in self.daemons.values() and address != self.daemon_address:
+                    self.daemons[address] = address
+                    print(f"Added new daemon: {address}")
 
-            # Add sender to known daemons if new
-            if address not in self.daemons.values() and address != self.daemon_address:
-                self.daemons[address] = address
-                print(f"Added new daemon: {address}")
-            if datagram_type == 0x01:
-                self.forward_to_client(payload, sequence, user)
-                if operation == 0x02:
-                    self.SYNs[user] = sequence
-                    print(f'received SYN({sequence})')
-                elif operation == (0x02|0x04):
-                    print(f"2nd daemon received syn({sequence})+ack({self.SYNs[user]}) from client")
-                    self.send_message_to_daemons(datagram_type, 0x04, sequence+1,  user, payload)
-                elif operation == 0x04:
-                    print(f"daemon recieved an ack({ack})")
-                elif operation == 0x08:
-                    print('daemon recieved FIN')
-            # Forward the message to the client
-            elif datagram_type == 0x02:  # Chat message
-                self.forward_to_client(payload, sequence, user)
+                if datagram_type == 0x01:
+                    if operation == 0x02:
+                        print(f"Daemon received a SYN {sequence}")
+                        self.last_syn_recv = sequence
+                        self.forward_to_client(payload)
+                    if self.client_is_chatting and operation != 0x08:
+                        self.send_ack()
+                    elif operation == 0x04:
+                        print(f"Daemon received an ACK {sequence}")
+                        self.last_ack_recv = sequence
+                        if not self.client_is_chatting:
+                            self.client_is_chatting = True
+                    elif operation == 0x08:
+                        print("Recieved a FIN")
+                        if not self.client_is_chatting:
+                            datagram = self.create_datagram(0x01, 0x08, 0x00, self.client_username, f"User {user} declined the invitation. \nPress enter to continue...\n")
+                            self.client_sock.sendto(datagram, self.client_address)
+                        else:
+                            self.forward_to_client("User left chat")
+                            print('got to receiver FIN poh')
+                            time.sleep(1)
+                            self.client_address = None
+                            self.daemons = {}  
+                            self.client_username = None  
+                            self.last_ack_recv = 0x00
+                            self.last_ack_sent = 0x00
+                            self.last_syn_sent = 0x00
+                            self.last_syn_recv = 0x00
+                            self.client_is_chatting = False
+
+                # Forward the message to the client
+                elif datagram_type == 0x02:  # Chat message
+                    self.forward_to_client(payload)
+            except ConnectionResetError as e:
+                print(f"Connection reset error: {e}")
+                break
+            except OSError as e:
+                print(f"OS error: {e}")
+                break
+            except Exception as e:
+                print(f"Error in handle daemon messages {e}")
+                break
+
 
     def handle_client_messages(self):
         """Handle messages from the connected client."""
         while True:
-            data, address = self.client_sock.recvfrom(1024)
-            datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
+            try:
+                data, address = self.client_sock.recvfrom(1024)
+                datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
 
-            # If the client is not yet registered, register it
-            if self.client_address is None:
-                self.client_address = address
-                print(f"Client connected from {self.client_address}")
+                # If the client is not yet registered, register it
+                if self.client_address is None:
+                    self.client_address = address
+                    print(f"Client connected from {self.client_address}")
 
-            # If username is not yet set, interpret the first message as the username
-            if self.client_username is None:
-                self.client_username = user
-                print(f"Client username set to {self.client_username}")
+                # If username is not yet set, interpret the first message as the username
+                if self.client_username is None:
+                    self.client_username = user
+                    print(f"Client username set to {self.client_username}")
 
-                # Broadcast that this user has joined
-                self.send_message_to_daemons(datagram_type, operation,sequence, self.client_username, "has joined the chat!")
-                # self.forward_to_client(f"Welcome, {self.client_username}!")
-                continue
+                    # Broadcast that this user has joined
+                    self.send_message_to_daemons(datagram_type, operation, self.client_username, "has joined the chat!")
+                    continue
 
-            if datagram_type == 0x01:
-                print('datagram correct')
-                if operation == (0x02 | 0x04):  #SYN+ACK
-                    # print(f"daemon received syn({sequence})+ack({list(self.SYNs.values())[-1]+1}) from client")
-                    self.send_message_to_daemons(datagram_type, operation,sequence, user, payload)
-                elif operation == 0x02:  # SYN
-                    print('operation correct')
-                    self.default_daemons.append((payload, 7777))
-                    self.SYNs[user] = sequence
-                    self.send_message_to_daemons(datagram_type, operation,sequence, user, payload)
-                elif operation == 0x08:
-                    self.send_message_to_daemons(datagram_type,operation, sequence, user, payload )
+                if datagram_type == 0x01:
+                    if operation == 0x02:
+                        if not self.client_is_chatting:  # SYN
+                            self.default_daemons.append((payload, 7777))
+                            self.send_message_to_daemons(datagram_type, operation, user, payload)
+                        else:
+                            self.send_message_to_daemons(datagram_type, operation, user, payload)
+                    elif operation == 0x04:
+                        self.send_ack()
+                    elif operation == 0x08:
+                        if not self.client_is_chatting:
+                            print("User declined the chat invitatiton")
+                            self.send_message_to_daemons(datagram_type, operation, user, payload)
+                        else:
+                            self.send_message_to_daemons(datagram_type, operation, user, payload)
+                            time.sleep(2)
+                            print(f"User {self.client_username} disconnected from the server")
+                            self.client_address = None
+                            self.daemons = {}  
+                            self.client_username = None  
+                            self.last_ack_recv = 0x00
+                            self.last_ack_sent = 0x00
+                            self.last_syn_sent = 0x00
+                            self.last_syn_recv = 0x00
+                            self.client_is_chatting = False
 
-            elif datagram_type == 0x02:
-                # Broadcast the client's message to all other daemons
-                print(f"From client: {payload}")
-                self.send_message_to_daemons(datagram_type, operation, self.client_username, payload)
 
-    def discover_daemons(self):
-        """Send a discovery message to all default daemons."""
-        discovery_message = "DISCOVER"
-        for daemon in self.default_daemons:
-            if daemon != self.daemon_address:  # Exclude self from discovery
-                datagram = self.create_datagram(0x01, 0x01, 0, "DISCOVER", discovery_message)
-                self.daemon_sock.sendto(datagram, daemon)
+
+                elif datagram_type == 0x02:
+                    # Broadcast the client's message to all other daemons
+                    print(f"From client: {payload}")
+                    self.send_message_to_daemons(datagram_type, operation, self.client_username, payload)
+            except ConnectionResetError as e:
+                print(f"Connection reset error: {e}")
+                break
+            except OSError as e:
+                print(f"OS error: {e}")
+                break
+
 
     def start(self):
         """Start the daemon to handle client and daemon messages."""
         print(f"Daemon started. Listening on {self.daemon_address} for daemons.")
         print("Listening on port 7778 for client connections.")
-
-        # Send discovery messages
-        self.discover_daemons()
 
         # Start separate threads for daemon and client communication
         threading.Thread(target=self.handle_daemon_messages, daemon=True).start()
@@ -182,17 +254,7 @@ class UdpDaemon:
 
 if __name__ == "__main__":
     host = sys.argv[1]
-    # host = input("Enter daemon host (IP address this daemon will run on, e.g., 127.0.0.1): ")
     daemon = UdpDaemon(host)
-
-    # print("\n=== Configure Other Known Daemons ===")
-    # while True:
-    #     other_host = input("Enter another daemon IP (or press Enter to finish): ")
-    #     if not other_host:
-    #         break
-    #     daemon.default_daemons.append((other_host, 7777))
-
-    # print(f"\nKnown daemons: {daemon.default_daemons}\n")
     daemon.start()
 
 #192.168.1.20
