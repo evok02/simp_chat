@@ -4,7 +4,6 @@ import struct
 import sys
 
 
-is_chatting = False
 last_seq = 0x00
 class UdpClient:
     
@@ -16,6 +15,8 @@ class UdpClient:
         self.input_thread = None
         self.running = True
         self.wait_for_reply = threading.Event()
+        self.message_received = threading.Condition()
+        self.is_chatting = False
 
     def create_datagram(self, datagram_type, operation, sequence, user, payload=""):
         """Create a SIMP datagram."""
@@ -35,24 +36,35 @@ class UdpClient:
     def request_chat(self, ip):
         datagram = self.create_datagram(0x01, 0x02, 0, self.username, ip)
         self.sock.sendto(datagram, self.daemon_address)
+    
+    def disconnect_from_daemon(self):
+        datagram = self.create_datagram(0x01, 0x08, 0, self.username, "disconnect")
+        self.sock.sendto(datagram, self.daemon_address)
+        print("Disconnected from the daemon.")
+        self.running = False
+        with self.message_received:
+            self.message_received.notify()  # Notify to unblock waiting
+        self.receive_thread.join()
+        self.input_thread.join()
+        self.sock.close()
+        sys.exit(0)
 
     def send_message(self, message):
         """Send a message to the daemon in SIMP format."""
         if message.lower() == "q":
-            datagram = self.create_datagram(0x01, 0x08, 0, self.username, "disconnect")
-            self.sock.sendto(datagram, self.daemon_address)
-            print("Disconnected from the daemon.")
-            self.sock.close()
-            if self.recieve_thread:
-                self.recieve_thread.join()
-            sys.exit(0)
+            self.disconnect_from_daemon()
         else:
-            if is_chatting == False and message.upper() == "YES":
+            if self.is_chatting == False and message.upper() == "YES":
                 datagram = self.create_datagram(0x01, 0x04, 0, self.username, "")
                 self.sock.sendto(datagram, self.daemon_address)
-                datagram = self.create_datagram(0x01, 0x02, 0, self.username, "connection accepted")
+                datagram = self.create_datagram(0x01, 0x02, 0, self.username, "Connection accepted")
                 self.sock.sendto(datagram, self.daemon_address)
-                is_chatting == True
+                self.is_chatting == True
+            elif self.is_chatting == False and message.upper() == "NO":
+                datagram = self.create_datagram(0x01, 0x08, 0, self.username, "Invitation declined")
+                self.sock.sendto(datagram, self.daemon_address)
+                print("Invitation declined. Returning to default state.")
+                self.prompt_for_action()
             else:
                 datagram = self.create_datagram(0x02, 0x01, 0x00, self.username, message)  # 0x02 - Chat message
                 self.sock.sendto(datagram, self.daemon_address)
@@ -69,9 +81,13 @@ class UdpClient:
                 if datagram_type == 0x01:
                     if operation == 0x02:
                         print(f'{payload}')
+                    if operation == 0x08:
+                        print(f'{payload}')
+                        self.prompt_for_action()
                 if datagram_type == 0x02:  # Chat message
-                    print(f"{payload}") 
+                    print(f"{payload} ") 
                     self.wait_for_reply.set()  # Print the message received from the daemon
+
             except OSError:
                 print("Stopped from receiving messages")
                 break
@@ -84,6 +100,22 @@ class UdpClient:
                 self.send_message(message)
             except EOFError:
                 break
+    
+    def prompt_for_action(self):
+        """Prompt the user to start a new chat or wait for chat requests."""
+        while self.running:
+            choice = input('\nDo you want to start a new chat or wait for chat requests? (start/wait): ')
+            if choice.lower() == 'start':
+                connect_to = input('Enter IP of the user to connect: ')
+                self.request_chat(connect_to)
+                break
+            elif choice.lower() == 'wait':
+                print('Waiting for incoming chat requests...')
+                break
+            elif choice.lower() == 'q':
+                self.disconnect_from_daemon()
+            else:
+                print('Invalid choice. Please enter "start" or "wait".')
 
     def start(self):
         """Start the client."""
@@ -91,21 +123,18 @@ class UdpClient:
         datagram = self.create_datagram(0x02, 0x01, 0, self.username, "has joined the chat!")  # 0x01 - Connection message
         self.sock.sendto(datagram, self.daemon_address)  # Send the username to the daemon
 
-        connect_to = input('\nDo you want to start a new chat? If so enter IP of the user to connect: \n')
-        if connect_to:
-            self.request_chat(connect_to)
-        
+        self.prompt_for_action()
+
         self.receive_thread = threading.Thread(target=self.receive_messages)
         self.receive_thread.start()
         self.input_thread = threading.Thread(target=self.input_thread_func)
         self.input_thread.start()
 
-        
-        
+       
 
         self.receive_thread.join()
         self.input_thread.join()
-        
+
 
 if __name__ == "__main__":
     daemon_host = sys.argv[1]

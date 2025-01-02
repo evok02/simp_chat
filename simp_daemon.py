@@ -48,7 +48,7 @@ class UdpDaemon:
         if datagram_type == 0x01 and operation == 0x02:
             
             if len(self.daemons.values()) == 0:
-                formatted_message = f'Conversation request is pending...\nDo you want to accept chat with {username}, '
+                formatted_message = f'Conversation request is pending...\nDo you want to accept chat with {username}'
                 if self.last_ack_recv == 0x00:
                     datagram = self.create_datagram(0x01, 0x02, 0x01, username, formatted_message)
                 else:
@@ -68,6 +68,11 @@ class UdpDaemon:
             for address in self.daemons.values():
                 self.daemon_sock.sendto(datagram, address)
             self.last_ack_sent = self.last_syn_recv
+        if datagram_type == 0x01 and operation == 0x08:
+            formatted_message = f"{username} declined the connection"
+            datagram = self.create_datagram(0x01, 0x08, 0, username, formatted_message)
+            for address in self.daemons.values():
+                self.daemon_sock.sendto(datagram, address)
         else:
             formatted_message = f"{username}: {message}"
             datagram = self.create_datagram(0x02, 0x01, 0, username, formatted_message)
@@ -131,6 +136,13 @@ class UdpDaemon:
                         self.last_ack_recv = sequence
                         if not self.client_is_chatting:
                             self.client_is_chatting = True
+                    elif operation == 0x08:
+                        print("Recieved a FIN")
+                        if not self.client_is_chatting:
+                            datagram = self.create_datagram(0x01, 0x08, 0x00, self.client_username, f"User {user} declined the invitation. \nPress enter to continue...\n")
+                            self.client_sock.sendto(datagram, self.client_address)
+                        else:
+                            self.forward_to_client("User left chat")
 
                 # Forward the message to the client
                 elif datagram_type == 0x02:  # Chat message
@@ -177,15 +189,19 @@ class UdpDaemon:
                     elif operation == 0x04:
                         self.send_ack()
                     elif operation == 0x08:
-                        print(f"User {self.client_username} disconnected from the server")
-                        self.client_address = None
-                        self.daemons = {}  
-                        self.client_username = None  
-                        self.last_ack_recv = 0x00
-                        self.last_ack_sent = 0x00
-                        self.last_syn_sent = 0x00
-                        self.last_syn_recv = 0x00
-                        self.client_is_chatting = False
+                        if not self.client_is_chatting:
+                            print("User declined the chat invitatiton")
+                            self.send_message_to_daemons(datagram_type, operation, user, payload)
+                        else:
+                            print(f"User {self.client_username} disconnected from the server")
+                            self.client_address = None
+                            self.daemons = {}  
+                            self.client_username = None  
+                            self.last_ack_recv = 0x00
+                            self.last_ack_sent = 0x00
+                            self.last_syn_sent = 0x00
+                            self.last_syn_recv = 0x00
+                            self.client_is_chatting = False
 
 
 
@@ -200,21 +216,11 @@ class UdpDaemon:
                 print(f"OS error: {e}")
                 break
 
-    def discover_daemons(self):
-        """Send a discovery message to all default daemons."""
-        discovery_message = "DISCOVER"
-        for daemon in self.default_daemons:
-            if daemon != self.daemon_address:  # Exclude self from discovery
-                datagram = self.create_datagram(0x01, 0x01, 0, "DISCOVER", discovery_message)
-                self.daemon_sock.sendto(datagram, daemon)
 
     def start(self):
         """Start the daemon to handle client and daemon messages."""
         print(f"Daemon started. Listening on {self.daemon_address} for daemons.")
         print("Listening on port 7778 for client connections.")
-
-        # Send discovery messages
-        self.discover_daemons()
 
         # Start separate threads for daemon and client communication
         threading.Thread(target=self.handle_daemon_messages, daemon=True).start()
@@ -225,17 +231,7 @@ class UdpDaemon:
 
 if __name__ == "__main__":
     host = sys.argv[1]
-    # host = input("Enter daemon host (IP address this daemon will run on, e.g., 127.0.0.1): ")
     daemon = UdpDaemon(host)
-
-    # print("\n=== Configure Other Known Daemons ===")
-    # while True:
-    #     other_host = input("Enter another daemon IP (or press Enter to finish): ")
-    #     if not other_host:
-    #         break
-    #     daemon.default_daemons.append((other_host, 7777))
-
-    # print(f"\nKnown daemons: {daemon.default_daemons}\n")
     daemon.start()
 
 #192.168.1.20
