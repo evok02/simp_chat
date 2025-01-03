@@ -4,7 +4,6 @@ import struct
 import sys
 
 
-last_seq = 0x00
 class UdpClient:
     
     def __init__(self, daemon_host):
@@ -36,6 +35,7 @@ class UdpClient:
     def request_chat(self, ip):
         datagram = self.create_datagram(0x01, 0x02, 0, self.username, ip)
         self.sock.sendto(datagram, self.daemon_address)
+        self.is_chatting = True
     
     def disconnect_from_daemon(self):
         datagram = self.create_datagram(0x01, 0x08, 0, self.username, "disconnect")
@@ -59,7 +59,7 @@ class UdpClient:
                 self.sock.sendto(datagram, self.daemon_address)
                 datagram = self.create_datagram(0x01, 0x02, 0, self.username, "Connection accepted")
                 self.sock.sendto(datagram, self.daemon_address)
-                self.is_chatting == True
+                self.is_chatting = True
             elif self.is_chatting == False and message.upper() == "NO":
                 datagram = self.create_datagram(0x01, 0x08, 0, self.username, "Invitation declined")
                 self.sock.sendto(datagram, self.daemon_address)
@@ -81,13 +81,13 @@ class UdpClient:
                 if datagram_type == 0x01:
                     if operation == 0x02:
                         print(f'{payload}')
-                    if operation == 0x08:
+                    elif operation == 0x08:
                         print(f'{payload}')
+                        self.is_chatting = False
                         self.prompt_for_action()
-                if datagram_type == 0x02:  # Chat message
-                    print(f"{payload} ") 
-                    self.wait_for_reply.set()  # Print the message received from the daemon
-
+                elif datagram_type == 0x02:  # Chat message
+                    print(f"{payload}")
+                self.wait_for_reply.set()
             except OSError:
                 print("Stopped from receiving messages")
                 break
