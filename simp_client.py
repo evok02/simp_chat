@@ -41,7 +41,9 @@ class UdpClient:
         datagram = self.create_datagram(0x01, 0x08, 0, self.username, "disconnect")
         self.sock.sendto(datagram, self.daemon_address)
         print("Disconnected from the daemon.")
-        self.running = False
+        self.reconnect_to_daemon()
+        # self.running = False
+        self.is_chatting = False
         with self.message_received:
             self.message_received.notify()  # Notify to unblock waiting
         self.receive_thread.join()
@@ -49,6 +51,11 @@ class UdpClient:
         self.sock.close()
         sys.exit(0)
     
+    def reconnect_to_daemon(self):
+        reconnect = input('Enter IP for daemon to connect ')
+        client = UdpClient(reconnect)
+        client.start()
+
     def reconnect_to_daemon(self):
         reconnect = input('Enter IP for daemon to connect ')
         client = UdpClient(reconnect)

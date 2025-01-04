@@ -67,10 +67,18 @@ class UdpDaemon:
                 self.daemon_sock.sendto(datagram, address)
             self.last_ack_sent = self.last_syn_recv
         if datagram_type == 0x01 and operation == 0x08:
-            formatted_message = f"{username} declined the connection"
-            datagram = self.create_datagram(0x01, 0x08, 0, username, formatted_message)
-            for address in self.daemons.values():
-                self.daemon_sock.sendto(datagram, address)
+            if self.client_is_chatting:
+                print('if seld client is chatting')
+                formatted_message = f'{username} quit the chat'
+                datagram = self.create_datagram(0x01, 0x08, 0, username, formatted_message)
+                for address in self.daemons.values():
+                    self.daemon_sock.sendto(datagram, address)
+                    print(f'sent to {address}')
+            else:
+                formatted_message = f"{username} declined the connection"
+                datagram = self.create_datagram(0x01, 0x08, 0, username, formatted_message)
+                for address in self.daemons.values():
+                    self.daemon_sock.sendto(datagram, address)
         else:
             formatted_message = f"{username}: {message}"
             datagram = self.create_datagram(0x02, 0x01, 0, username, formatted_message)
@@ -116,8 +124,12 @@ class UdpDaemon:
     def forward_to_client(self, message):
         """Forward a message to the connected client."""
         if self.client_address:
-            datagram = self.create_datagram(0x02, 0x01, 0x00, "", message)
-            self.client_sock.sendto(datagram, self.client_address)
+            if message == 'User left chat':
+                datagram = self.create_datagram(0x01, 0x08, 0x00, self.client_username, message)
+                self.client_sock.sendto(datagram, self.client_address)
+            else:
+                datagram = self.create_datagram(0x02, 0x01, 0x00, self.client_username, message)
+                self.client_sock.sendto(datagram, self.client_address)
 
     def handle_daemon_messages(self):
         """Handle messages from other daemons."""
@@ -125,7 +137,6 @@ class UdpDaemon:
             try:
                 data, address = self.daemon_sock.recvfrom(1024)
                 datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
-                
                 current_time = datetime.now().strftime("%H:%M:%S")
                 # Add sender to known daemons if new
                 if address not in self.daemons.values() and address != self.daemon_address:
@@ -137,7 +148,7 @@ class UdpDaemon:
                         print(f"Daemon received a SYN {sequence}")
                         self.last_syn_recv = sequence
                         self.forward_to_client(payload)
-                    if operation == 0x02 and self.client_is_chatting :
+                    if operation == 0x02 and self.client_is_chatting and operation != 0x08 :
                         print(f"Received SYN: {payload}, {current_time}")
                         self.send_ack(sequence)
                     elif operation == 0x04:
@@ -154,6 +165,16 @@ class UdpDaemon:
                             self.client_sock.sendto(datagram, self.client_address)
                         else:
                             self.forward_to_client("User left chat")
+                            print('got to receiver FIN poh')
+                            time.sleep(1)
+                            self.client_address = None
+                            self.daemons = {}  
+                            self.client_username = None  
+                            self.last_ack_recv = 0x00
+                            self.last_ack_sent = 0x00
+                            self.last_syn_sent = 0x00
+                            self.last_syn_recv = 0x00
+                            self.client_is_chatting = False
 
                 # Forward the message to the client
                 elif datagram_type == 0x02:  # Chat message
@@ -204,6 +225,8 @@ class UdpDaemon:
                             print("User declined the chat invitatiton")
                             self.send_message_to_daemons(datagram_type, operation, user, payload)
                         else:
+                            self.send_message_to_daemons(datagram_type, operation, user, payload)
+                            time.sleep(2)
                             print(f"User {self.client_username} disconnected from the server")
                             self.client_address = None
                             self.daemons = {}  
