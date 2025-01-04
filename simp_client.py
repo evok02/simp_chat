@@ -56,11 +56,6 @@ class UdpClient:
         client = UdpClient(reconnect)
         client.start()
 
-    def reconnect_to_daemon(self):
-        reconnect = input('Enter IP for daemon to connect ')
-        client = UdpClient(reconnect)
-        client.start()
-
     def send_message(self, message):
         """Send a message to the daemon in SIMP format."""
         if message.lower() == "q":
@@ -77,6 +72,8 @@ class UdpClient:
                 self.sock.sendto(datagram, self.daemon_address)
                 print("Invitation declined. Returning to default state.")
                 self.prompt_for_action()
+            elif self.is_chatting == False:
+                print("You are not chatting to anybody...")
             else:
                 datagram = self.create_datagram(0x02, 0x01, 0x00, self.username, message)  # 0x02 - Chat message
                 self.sock.sendto(datagram, self.daemon_address)
@@ -95,10 +92,14 @@ class UdpClient:
                         print(f'{payload}')
                         pass
                     elif operation == 0x08:
+                        self.is_chatting = False
                         print(f'{payload}')
-                        self.reconnect_to_daemon()
+                        self.prompt_for_action()
                 if datagram_type == 0x02:  # Chat message
                     print(f"{payload}")
+                    if "User is busy in another chat." in payload:
+                        self.is_chatting = False
+                        self.prompt_for_action()
                 self.wait_for_reply.set()
             except OSError:
                 print("Stopped from receiving messages")

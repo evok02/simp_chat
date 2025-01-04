@@ -107,6 +107,11 @@ class UdpDaemon:
             print(f"SYN sent {sequence}")
         except Exception as e:
             print(f"Can't send the SYN {sequence}: {e}")
+
+    def send_err(self, message = ""):
+        err_datagram = self.create_datagram(0x01, 0x01, 0x00, self.client_username, message)
+        for address in self.daemons.values():
+            self.daemon_sock.sendto(err_datagram, address)
     
     def retransmit_syns(self):
         """Check for unacknowledged SYNs and retransmit if necessary."""
@@ -139,15 +144,24 @@ class UdpDaemon:
                 datagram_type, operation, sequence, user, length, payload = self.parse_datagram(data)
                 current_time = datetime.now().strftime("%H:%M:%S")
                 # Add sender to known daemons if new
-                if address not in self.daemons.values() and address != self.daemon_address:
-                    self.daemons[address] = address
+                if address not in self.daemons.values() and address != self.daemon_address and not self.client_is_chatting:
+                    self.daemons[str(address[1])] = address
                     print(f"Added new daemon: {address}")
                 
                 if datagram_type == 0x01:
+                    if operation == 0x01:
+                        print(f"Received an ERR: {payload}")
+                        self.forward_to_client(f"{payload}")
+                        del self.daemons[str(address[1])]
                     if operation == 0x02 and not self.client_is_chatting:
                         print(f"Daemon received a SYN {sequence}")
                         self.last_syn_recv = sequence
                         self.forward_to_client(payload)
+                    if operation == 0x02 and self.client_is_chatting and address not in self.daemons.values():
+                        print("Client is busy. Sending ERR to the sender.")
+                        err_message = "User is busy in another chat."
+                        err_datagram = self.create_datagram(0x01, 0x01, 0x00, self.client_username, err_message)
+                        self.daemon_sock.sendto(err_datagram, address)
                     if operation == 0x02 and self.client_is_chatting and operation != 0x08 :
                         print(f"Received SYN: {payload}, {current_time}")
                         self.send_ack(sequence)
@@ -162,8 +176,10 @@ class UdpDaemon:
                         print("Recieved a FIN")
                         if not self.client_is_chatting:
                             datagram = self.create_datagram(0x01, 0x08, 0x00, self.client_username, f"User {user} declined the invitation. \nPress enter to continue...\n")
+                            del self.daemons[str(address[1])]
                             self.client_sock.sendto(datagram, self.client_address)
                         else:
+                            del self.daemons[str(address[1])]
                             self.forward_to_client("User left chat")
                             print('got to receiver FIN poh')
                             time.sleep(1)
@@ -181,12 +197,15 @@ class UdpDaemon:
                     self.forward_to_client(payload)
             except ConnectionResetError as e:
                 print(f"Connection reset error: {e}")
+                self.send_err(f"User {self.client_username} got ConnectionResetError")
                 break
             except OSError as e:
-                print(f"OS error: {e}")
+                print(f"OSError: {e}")
+                self.send_err(f"User {self.client_username} got OSError")
                 break
             except Exception as e:
-                print(f"Error in handle daemon messages {e}")
+                print(f"Some problem occured: {e}")
+                self.send_err(f"User {self.client_username} got some problem")
                 break
 
 
