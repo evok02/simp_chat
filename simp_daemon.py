@@ -92,7 +92,6 @@ class UdpDaemon:
         try:
             sequence = 0x01 if self.last_syn_sent == 0x00 else 0x00
             datagram = self.create_datagram(0x01, 0x02, sequence, self.client_username, message)
-            print(self.client_username)
             self.syn_buffer[sequence] = (datagram, time.time())
             for address in self.daemons.values():
                 self.daemon_sock.sendto(datagram, address)
@@ -117,7 +116,7 @@ class UdpDaemon:
     def forward_to_client(self, message):
         """Forward a message to the connected client."""
         if self.client_address:
-            datagram = self.create_datagram(0x02, 0x01, 0x00, self.client_username, message)
+            datagram = self.create_datagram(0x02, 0x01, 0x00, "", message)
             self.client_sock.sendto(datagram, self.client_address)
 
     def handle_daemon_messages(self):
@@ -141,7 +140,6 @@ class UdpDaemon:
                     if operation == 0x02 and self.client_is_chatting :
                         print(f"Received SYN: {payload}, {current_time}")
                         self.send_ack(sequence)
-                        self.forward_to_client(payload)
                     elif operation == 0x04:
                         print(f"Daemon received an ACK {sequence}, {current_time}")
                         if not self.client_is_chatting:

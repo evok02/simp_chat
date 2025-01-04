@@ -48,6 +48,11 @@ class UdpClient:
         self.input_thread.join()
         self.sock.close()
         sys.exit(0)
+    
+    def reconnect_to_daemon(self):
+        reconnect = input('Enter IP for daemon to connect ')
+        client = UdpClient(reconnect)
+        client.start()
 
     def send_message(self, message):
         """Send a message to the daemon in SIMP format."""
@@ -70,7 +75,7 @@ class UdpClient:
                 self.sock.sendto(datagram, self.daemon_address)
                 self.wait_for_reply.clear()  # Block until a reply is received
                 self.wait_for_reply.wait()
-
+    
         
     def receive_messages(self):
         """Listen for incoming messages from the daemon."""
@@ -81,11 +86,11 @@ class UdpClient:
                 if datagram_type == 0x01:
                     if operation == 0x02:
                         print(f'{payload}')
+                        pass
                     elif operation == 0x08:
                         print(f'{payload}')
-                        self.is_chatting = False
-                        self.prompt_for_action()
-                elif datagram_type == 0x02:  # Chat message
+                        self.reconnect_to_daemon()
+                if datagram_type == 0x02:  # Chat message
                     print(f"{payload}")
                 self.wait_for_reply.set()
             except OSError:
@@ -130,7 +135,6 @@ class UdpClient:
         self.input_thread = threading.Thread(target=self.input_thread_func)
         self.input_thread.start()
 
-       
 
         self.receive_thread.join()
         self.input_thread.join()
