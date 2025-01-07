@@ -120,8 +120,9 @@ class UdpDaemon:
             for address in self.daemons.values():
                 self.daemon_sock.sendto(datagram, address)
             self.last_ack_sent = sequence
-        except:
+        except Exception as e:
             print("Can't send the ACK")
+            self.send_err(f"Failed to send ACK: {e}")
 
     # Method to send a SYN message
     def send_syn(self, message = ""):
@@ -139,6 +140,7 @@ class UdpDaemon:
             print(f"SYN sent {sequence}")
         except Exception as e:
             print(f"Can't send the SYN {sequence}: {e}")
+            self.send_err(f"Failed to send SYN: {e}")
 
     # Method to send an ERR message
     def send_err(self, message = ""):
@@ -267,6 +269,8 @@ class UdpDaemon:
                     continue
 
                 if datagram_type == 0x01:
+                    if operation == 0x01:
+                        print(payload)
                     if operation == 0x02:
                         if not self.client_is_chatting:  # SYN
                             self.default_daemons.append((payload, 7777))

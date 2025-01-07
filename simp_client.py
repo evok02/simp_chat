@@ -34,6 +34,14 @@ class UdpClient:
         datagram_type, operation, sequence, user_padded, length = struct.unpack('!BB1B32sI', header)
         user = user_padded.decode('ascii').rstrip('\x00')  # Remove padding from username
         return datagram_type, operation, sequence, user, length, payload
+    
+    def send_err(self, message):
+        """Send an ERR message to the daemon."""
+        try:
+            err_datagram = self.create_datagram(0x01, 0x01, 0x00, self.username, message)
+            self.sock.sendto(err_datagram, self.daemon_address)
+        except Exception as e:
+            print(f"Can't send the ERR: {e}")
 
     def request_chat(self, ip):
         """Send a chat request to another user."""
@@ -123,40 +131,53 @@ class UdpClient:
     def prompt_for_action(self):
         """Prompt the user to start a new chat or wait for chat requests."""
         while self.running:
-            choice = input('\nDo you want to start a new chat or wait for chat requests? (start/wait): ')
-            if choice.lower() == 'start':  # Start new chat
-                connect_to = input('Enter IP of the user to connect: ')
-                self.request_chat(connect_to)
-                break
-            elif choice.lower() == 'wait':  # Wait for chat requests
-                print('Waiting for incoming chat requests...')
-                break
-            elif choice.lower() == 'q':  # Quit client
-                self.disconnect_from_daemon()
-            else:  # Handle invalid input
-                print('Invalid choice. Please enter "start" or "wait".')
+            try:
+                choice = input('\nDo you want to start a new chat or wait for chat requests? (start/wait): ')
+                if choice.lower() == 'start':  # Start new chat
+                    connect_to = input('Enter IP of the user to connect: ')
+                    self.request_chat(connect_to)
+                    break
+                elif choice.lower() == 'wait':  # Wait for chat requests
+                    print('Waiting for incoming chat requests...')
+                    break
+                elif choice.lower() == 'q':  # Quit client
+                    self.disconnect_from_daemon()
+                else:  # Handle invalid input
+                    print('Invalid choice. Please enter "start" or "wait".')
+            except Exception as e:
+                print(f"Error in prompt_for_action: {e}")
+                self.send_err(f"Failed in prompt_for_action: {e}")
+
 
     def start(self):
-        """Start the client."""
-        self.username = input("Enter your username: ")  # Prompt user for username
-        datagram = self.create_datagram(0x02, 0x01, 0, self.username, "has joined the chat!")  # Connection message
-        self.sock.sendto(datagram, self.daemon_address)  # Notify daemon about new user
+        try:
+            """Start the client."""
+            self.username = input("Enter your username: ")  # Prompt user for username
+            datagram = self.create_datagram(0x02, 0x01, 0, self.username, "has joined the chat!")  # Connection message
+            self.sock.sendto(datagram, self.daemon_address)  # Notify daemon about new user
 
-        self.prompt_for_action()  # Prompt user for action
+            self.prompt_for_action()  # Prompt user for action
 
-        # Start threads for receiving messages and user input
-        self.receive_thread = threading.Thread(target=self.receive_messages)
-        self.receive_thread.start()
-        self.input_thread = threading.Thread(target=self.input_thread_func)
-        self.input_thread.start()
+            # Start threads for receiving messages and user input
+            self.receive_thread = threading.Thread(target=self.receive_messages)
+            self.receive_thread.start()
+            self.input_thread = threading.Thread(target=self.input_thread_func)
+            self.input_thread.start()
 
-        # Wait for threads to finish
-        self.receive_thread.join()
-        self.input_thread.join()
+            # Wait for threads to finish
+            self.receive_thread.join()
+            self.input_thread.join()
+        except Exception as e:
+            print(f"Error in start: {e}")
+            self.send_err(f"Failed to start client: {e}")
 
 
 if __name__ == "__main__":
-    # Get daemon host address from command line arguments
-    daemon_host = sys.argv[1]
-    client = UdpClient(daemon_host)
-    client.start()
+    try:
+        # Get daemon host address from command line arguments
+        daemon_host = sys.argv[1]
+        client = UdpClient(daemon_host)
+        client.start()
+    except Exception as e:
+        print(f"Error in main: {e}")
+        client.send_err(f"Failed to start client from main: {e}")
